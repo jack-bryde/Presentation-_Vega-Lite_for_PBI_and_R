@@ -1,0 +1,115 @@
+---
+title: "Vega-Lite Power BI Presentation"
+author: "Jack Bryde"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE
+)
+
+# Thanks to Nick for this tip
+setwd(paste0("C:/Users/", 
+             tolower(Sys.info()[["user"]]), 
+             "/Documents/Ad hoc/PBI/Presentations/Vega-Lite for PBI and R/") )
+
+```
+
+
+## Load and prepare data
+
+
+```{r load_data, messages = FALSE}
+
+library(tidyverse) # god mode
+
+erp <- 
+    readxl::read_excel("ABS_ERP_2023.xlsx",
+                       sheet = "Table_8",
+                       skip = 4,
+                       col_names = TRUE,
+                       n_max = 216) |> 
+    # Very nice, merged cells are un-merged with value in the left cell
+    filter(`Age (years)` != 'MALES')
+
+# Find row number of FEMALE
+rowNum <- which(erp$`Age (years)` == 'FEMALE')
+
+erp <- 
+    erp |> 
+    mutate(Gender = if_else(row_number() < rowNum,
+                            'Male',
+                            'Female') ) |> 
+    # Keep only Age Groups
+    filter(str_detect(`Age (years)`, "-") ) |> 
+    # As in Power Query, add a numeric column to sort Age Groups (using Regex to extract chars before "-")
+    mutate(AgeGroupOrder = as.numeric(str_extract(`Age (years)`, "^[^-]+") ) ) |> 
+    # Remove inferior states and territories
+    select(-c(`New South Wales`, `Victoria`, `South Australia`:`Australian Capital Territory`) ) |> 
+    # Squish Queensland and Australia into one column,
+    pivot_longer(cols = c(`Queensland`, `Australia`),
+                 names_to = "State",
+                 values_to = "Population")
+
+deneb_data <- 
+    erp |> 
+    # Drop
+    filter(State != "Australia") |> 
+    # Aggregate and group
+    group_by(`Age (years)`, AgeGroupOrder, Gender) |> 
+    summarise(`Sum of Population` = sum(Population) )
+```
+
+## Plot using Vega-Lite
+
+```{r plot}
+library(vegawidget) # art mode
+
+# Read in JSON spec
+pop_pyr <- as_vegaspec("population_pyramid_spec.json")
+
+# If one has {listviewer} installed, the json can be visualised quite nicely.
+# Editing is also available within this window, similar to Deneb.
+library(listviewer)
+vw_examine(pop_pyr)
+
+# Recall all data in PBI is named "dataset", which should now point to our df
+pop_pyr$data$name
+pop_pyr$data <- list(values = deneb_data) # (Do not quote the name of the dataset)
+
+# Plot (note, this does not display in R studio Source pane, but will render correctly)
+as_vegaspec(pop_pyr)
+
+```
+
+## Prepare visual in R for export to Power BI
+
+```{r reverse}
+data("cars")
+
+# As JSON is just lists within lists, and R has a native list data type....behold
+spec_mtcars <-
+    list(
+        `$schema` = vega_schema(), # specifies Vega-Lite
+        description = "An mtcars example.",
+        data = list(values = mtcars),
+        mark = "point",
+        encoding = list(
+            x = list(field = "wt", type = "quantitative"),
+            y = list(field = "mpg", type = "quantitative"),
+            color = list(field = "cyl", type = "nominal")
+        )
+    ) |> 
+    as_vegaspec()
+
+spec_mtcars
+
+# Export as text to use Notepad when copying back into Power BI
+exported_json <- 
+    vw_as_json(spec_mtcars) |> 
+    write(file = "exported_json.txt")
+
+```
