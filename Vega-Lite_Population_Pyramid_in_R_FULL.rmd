@@ -1,0 +1,134 @@
+---
+title: "Vega-Lite Population Pyramid in R"
+author: "Jack Bryde"
+output: html_document
+---
+
+```{r set_wd, echo=FALSE}
+# This is bad practice, but I'm lazy
+proj_path <- "C:/Users/brydej/Documents/Ad hoc/PBI/Presentations/Vega-Lite for PBI and R/"
+```
+
+### Load and prepare data
+
+First, we load the same data as for Power BI, the ERP from Australian Bureau of Statistics.
+
+The only trick here is to note that under the hood, PBI might be aggregating data in the Values well.
+
+```{r fig_ValuesWell, echo=FALSE, out.width="25%", out.height="25%", fig.border="1px solid #000", fig.align="center", fig.cap="Note the columns used in Power BI, with POPULATION aggregated by sum"}
+knitr::include_graphics(paste0(proj_path, "ValuesWell.png") )
+```
+
+This can be seen when viewing the Deneb visual as a table:
+
+```{r fig_PreAggData, echo=FALSE, out.width="40%", out.height="40%", fig.border="1px solid #000", fig.align="center", fig.cap="Mimic this table when using R"}
+knitr::include_graphics(paste0(proj_path, "PreAggData.png") )
+```
+
+Be mindful of which filters have been applied in Power BI - they will need replication for the static image in R.
+
+```{r setup, echo = TRUE, message = FALSE}
+library(tidyverse) # god mode
+
+erp <- 
+    readxl::read_excel("ABS_ERP_2023.xlsx",
+                       sheet = "Table_8",
+                       skip = 4,
+                       col_names = TRUE,
+                       n_max = 216) |> 
+    # Very nice, merged cells are un-merged with value in the left cell
+    filter(`Age (years)` != 'MALES')
+
+# Find row number of FEMALE
+rowNum <- which(erp$`Age (years)` == 'FEMALE')
+
+    erp <- 
+        erp |> 
+        mutate(Gender = if_else(row_number() < rowNum,
+                                'Male',
+                                'Female') ) |> 
+        # Remove FEMALE row
+        filter(row_number() != rowNum) |> 
+        # Keep only Age Groups
+        filter(str_detect(`Age (years)`, "-") ) |> 
+        # As in Power Query, add a numeric column to sort Age Groups (using Regex to extract chars before "-")
+        mutate(AgeGroupOrder = as.numeric(str_extract(`Age (years)`, "^[^-]+") ) ) |> 
+        # Remove inferior states and territories
+        select(-c(`New South Wales`, `Victoria`, `South Australia`:`Australian Capital Territory`) ) |> 
+        # Squish Queensland and Australia into one column,
+        pivot_longer(cols = c(`Queensland`, `Australia`),
+                     names_to = "State",
+                     values_to = "Population")
+    
+    deneb_data <- 
+        erp |> 
+        # Drop
+        filter(State != "Australia") |> 
+        # Aggregate and group
+        group_by(`Age (years)`, AgeGroupOrder, Gender) |> 
+        summarise(`Sum of Population` = sum(Population) )
+
+```
+
+## From Power BI (Deneb) to R
+
+To recreate the Power BI plot in R, we _DO NOT_ export the Vega-Lite specification to a JSON file (using the top right button on the Deneb visual). Instead, we simply copy the contents from our Specification editor into Notepad as save as JSON. 
+
+```{r fig_DenebExportSpec, echo=FALSE, out.width="40%", out.height="40%", fig.border="1px solid #000", fig.align="center", fig.cap="Copy all of this into Notepad"}
+knitr::include_graphics(paste0(proj_path, "DenebExportSpec.png") )
+```
+
+```{r plot, echo = TRUE, warning = FALSE}
+
+library(vegawidget) # art mode
+
+# Read in JSON spec
+pop_pyr <- as_vegaspec("population_pyramid_spec.json")
+
+# If one has {listviewer} installed, the json can be visualised quite nicely.
+# Editing is also available within this window, similar to Deneb.
+library(listviewer)
+vw_examine(pop_pyr)
+
+# Recall all data in PBI is named "dataset", which should now point to our df
+# pop_pyr$data$name 
+pop_pyr$data <- list(values = deneb_data) # (Do not quote the name of the dataset)
+```
+
+```{r vegaplot, fig.align="center", fig.cap="Exactly as in Power BI"}
+# Now plot
+as_vegaspec(pop_pyr)
+
+```
+
+## From R to Power BI
+
+`{vegawidget}` also provides the ability to export from R to Power BI with `vs_asjson()`, which would allow the specification  to be copied back into Power BI.
+
+```{r plot_from_scratch, echo=TRUE, warning=FALSE, fig.align="center"}
+library(vegawidget)
+data("cars")
+
+# Creating a JSON vega specification using R list structures
+spec_mtcars <-
+  list(
+    `$schema` = vega_schema(), # specifies Vega-Lite
+    description = "An mtcars example.",
+    data = list(values = mtcars),
+    mark = "point",
+    encoding = list(
+      x = list(field = "wt", type = "quantitative"),
+      y = list(field = "mpg", type = "quantitative"),
+      color = list(field = "cyl", type = "nominal")
+    )
+  ) |> 
+  as_vegaspec()
+
+spec_mtcars
+
+# Export as text to use Notepad when copying back into Power BI
+exported_json <- 
+    vw_as_json(spec_mtcars) |> 
+    write(file = "C:/Users/Public/Downloads/exported_json.txt")
+
+```
